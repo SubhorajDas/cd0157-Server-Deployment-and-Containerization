@@ -12,6 +12,38 @@ The Flask app that will be used for this project consists of a simple API with t
 
 The app relies on a secret set as the environment variable `JWT_SECRET` to produce a JWT. The built-in Flask server is adequate for local development, but not production, so you will be using the production-ready [Gunicorn](https://gunicorn.org/) server when deploying the app.
 
+## Project submission
+
+**External URL of the service (EKS / ELB):** `EXTERNAL_URL_PLACEHOLDER`
+
+```bash
+# Health check
+curl --request GET 'EXTERNAL_URL_PLACEHOLDER/'
+# Get a JWT
+export TOKEN=`curl -d '{"email":"abc@xyz.com","password":"mypwd"}' -H "Content-Type: application/json" -X POST EXTERNAL_URL_PLACEHOLDER/auth  | jq -r '.token'`
+# Decode the JWT
+curl --request GET 'EXTERNAL_URL_PLACEHOLDER/contents' -H "Authorization: Bearer ${TOKEN}" | jq .
+```
+
+What was done for each part of the rubric:
+
+| Rubric item | Where |
+|---|---|
+| Dockerfile installs requirements and runs the app with `gunicorn -b :8080 main:APP` | [`Dockerfile`](Dockerfile) |
+| `JWT_SECRET` (and `LOG_LEVEL`) set in a file for running the container locally | [`.env_file`](.env_file), used with `docker run --env-file=.env_file -p 80:8080 myimage` |
+| IAM role `UdacityFlaskDeployCBKubectlRole` for CodeBuild | [`trust.json`](trust.json), [`iam-role-policy.json`](iam-role-policy.json) |
+| CodeBuild role authorized on the cluster (`system:masters`) | [`aws-auth-patch.yml`](aws-auth-patch.yml) |
+| Default values for EKS cluster name, GitHub repo, GitHub user and kubectl role | `Parameters` section of [`ci-cd-codepipeline.cfn.yml`](ci-cd-codepipeline.cfn.yml) |
+| buildspec reads `JWT_SECRET` from the AWS Parameter Store | `env.parameter-store` in [`buildspec.yml`](buildspec.yml) |
+| Unit tests run in CodeBuild before anything is built or deployed | `pre_build` phase in [`buildspec.yml`](buildspec.yml), tests in [`test_main.py`](test_main.py) |
+
+Extras:
+
+* The `JWT_SECRET` from the Parameter Store is also passed to the running pods, as the Kubernetes secret `jwt-secret` (see [`simple_jwt_api.yml`](simple_jwt_api.yml)), so the deployed app signs tokens with it instead of the default secret in `main.py`.
+* Each buildspec phase uses `on-failure: ABORT` and prints a custom message that says why the pipeline failed (failed unit tests, ECR login, `docker build`, cluster authentication, or a rollout that never became ready).
+* `kubectl` in CodeBuild is pinned to v1.36.6 to match the EKS 1.36 control plane, and the binary's checksum is verified.
+* `/auth` now returns HTTP 400 (instead of 200) when the email or password is missing. Tests cover all three endpoints, including the error cases.
+
 
 
 ## Prerequisites

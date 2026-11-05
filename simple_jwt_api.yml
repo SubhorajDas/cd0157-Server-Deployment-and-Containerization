@@ -38,3 +38,18 @@ spec:
             allowPrivilegeEscalation: false
           ports:
             - containerPort: 8080
+          env:
+            # Created by CodeBuild (buildspec.yml) from the JWT_SECRET value in the AWS Parameter Store
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: jwt-secret
+                  key: JWT_SECRET
+            - name: LOG_LEVEL
+              value: INFO
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10

@@ -4,45 +4,52 @@ version: 0.2
 
 phases:
   install:
+    on-failure: ABORT
     runtime-versions:
-      python: 3.7
+      python: 3.11
     commands:
-      - echo 'about to call dockerd'
-      - nohup /usr/local/bin/dockerd --host=unix:///var/run/docker.sock --host=tcp://127.0.0.1:2375 --storage-driver=overlay2&
-      - timeout 15 sh -c "until docker info; do echo .; sleep 1; done"
-      - curl -sS -o aws-iam-authenticator https://amazon-eks.s3-us-west-2.amazonaws.com/1.10.3/2018-07-26/bin/linux/amd64/aws-iam-authenticator
-      # Download the latest stable release kubectl      
-      # - curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
-      # You must use a kubectl version that is within one minor version difference of your Amazon EKS cluster control plane. 
-      # For example, a 1.21 kubectl client works with Kubernetes 1.20, 1.21 and 1.22 clusters.
+      # You must use a kubectl version that is within one minor version difference of your Amazon EKS cluster control plane.
+      # The EKS cluster `simple-jwt-api` runs Kubernetes 1.36, so we pin kubectl v1.36.6 (same version used locally).
       # Ref: https://docs.aws.amazon.com/eks/latest/userguide/install-kubectl.html OR https://kubernetes.io/docs/tasks/tools/install-kubectl-linux/
-      # To download a specific version v1.27.9 on Linux, use:
-      - curl -O https://s3.us-west-2.amazonaws.com/amazon-eks/1.27.9/2024-01-04/bin/linux/amd64/kubectl
-      # Download the kubectl checksum file
-      - curl -O https://s3.us-west-2.amazonaws.com/amazon-eks/1.27.9/2024-01-04/bin/linux/amd64/kubectl.sha256
-      # Validate the kubectl binary against the checksum file
-      - sha256sum -c kubectl.sha256
+      - curl -sSLO "https://dl.k8s.io/release/v1.36.6/bin/linux/amd64/kubectl"
+      # Download the kubectl checksum file and validate the binary against it
+      - curl -sSLO "https://dl.k8s.io/release/v1.36.6/bin/linux/amd64/kubectl.sha256"
+      - echo "$(cat kubectl.sha256)  kubectl" | sha256sum --check
       # Install kubectl
-      - chmod +x ./kubectl ./aws-iam-authenticator      
-      # - mkdir -p $HOME/bin && cp ./kubectl $HOME/bin/kubectl && export PATH=$PATH:$HOME/bin
-      - export PATH=$PWD/:$PATH  
+      - chmod +x ./kubectl
+      - mv ./kubectl /usr/local/bin/kubectl
+      - rm -f kubectl.sha256
+      - kubectl version --client
       - python --version
-      - echo 'export PATH=$PWD/:$PATH' >> $HOME/.bashrc
-      - echo `kubectl version --short --client`
-      - python -m pip install --upgrade --force pip
-      - wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | apt-key add
-      - apt-get update && apt-get -y install jq  && pip install --upgrade awscli pytest
+      - python -m pip install --upgrade pip
   pre_build:
+    on-failure: ABORT
     commands:
+      # Install the requirements and run the unit tests. If any test fails, the build stops here
+      # and nothing is built, pushed or deployed to the EKS cluster.
+      - pip3 install -r requirements.txt
+      - |
+        python -m pytest test_main.py -v || {
+          echo "BUILD FAILED - unit tests in test_main.py did not pass. The new image was NOT deployed to EKS."
+          exit 1
+        }
       - TAG="$REPOSITORY_NAME.$REPOSITORY_BRANCH.$ENVIRONMENT_NAME.$(date +%Y-%m-%d.%H.%M.%S).$(echo $CODEBUILD_RESOLVED_SOURCE_VERSION | head -c 8)"
       - sed -i 's@CONTAINER_IMAGE@'"$REPOSITORY_URI:$TAG"'@' simple_jwt_api.yml
-      - $(aws ecr get-login --no-include-email)
+      # Log in to the ECR repository that the CloudFormation stack created
+      - |
+        aws ecr get-login-password --region $AWS_DEFAULT_REGION | docker login --username AWS --password-stdin ${REPOSITORY_URI%%/*} || {
+          echo "BUILD FAILED - could not log in to the ECR registry ${REPOSITORY_URI%%/*}."
+          exit 1
+        }
       - export KUBECONFIG=$HOME/.kube/config
-      - echo `ls -l`
-      - pip install -r requirements.txt
   build:
+    on-failure: ABORT
     commands:
-      - docker build --tag $REPOSITORY_URI:$TAG .
+      - |
+        docker build --tag $REPOSITORY_URI:$TAG . || {
+          echo "BUILD FAILED - docker build failed. Check the Dockerfile and requirements.txt."
+          exit 1
+        }
 
   post_build:
     commands:
@@ -50,10 +57,23 @@ phases:
       - echo $EKS_CLUSTER_NAME
       - echo $EKS_KUBECTL_ROLE_ARN
       - aws eks update-kubeconfig --name $EKS_CLUSTER_NAME --role-arn $EKS_KUBECTL_ROLE_ARN
-      - kubectl apply -f simple_jwt_api.yml 
+      - |
+        kubectl get nodes || {
+          echo "DEPLOY FAILED - CodeBuild could not authenticate to the EKS cluster. Make sure $EKS_KUBECTL_ROLE_ARN is mapped in the aws-auth ConfigMap (see aws-auth-patch.yml)."
+          exit 1
+        }
+      # Pass the JWT_SECRET (read from the AWS Parameter Store, see `env` below) to the pods as a Kubernetes secret
+      - kubectl create secret generic jwt-secret --from-literal=JWT_SECRET="$JWT_SECRET" --dry-run=client -o yaml | kubectl apply -f -
+      - kubectl apply -f simple_jwt_api.yml
+      - |
+        kubectl rollout status deployment/simple-jwt-api --timeout=300s || {
+          echo "DEPLOY FAILED - the new pods did not become ready. Run 'kubectl describe pods -l app=simple-jwt-api' for details."
+          exit 1
+        }
+      - kubectl get services simple-jwt-api -o wide
       - printf '[{"name":"simple_jwt_api","imageUri":"%s"}]' $REPOSITORY_URI:$TAG > build.json
 artifacts:
   files: build.json
 env:
-  parameter-store:         
+  parameter-store:
     JWT_SECRET: JWT_SECRET
