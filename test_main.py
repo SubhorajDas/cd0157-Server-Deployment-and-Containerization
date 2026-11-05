@@ -32,6 +32,7 @@ def _get_token(client, email=EMAIL, password=PASSWORD):
 def test_health(client):
     response = client.get('/')
     assert response.status_code == 200
+    assert False
     assert response.json == 'Healthy'
 
 
