@@ -14,15 +14,15 @@ The app relies on a secret set as the environment variable `JWT_SECRET` to produ
 
 ## Project submission
 
-**External URL of the service (EKS / ELB):** `EXTERNAL_URL_PLACEHOLDER`
+**External URL of the service (EKS / ELB):** `http://a198b565304834ff79a9a5b528a59da1-803878907.us-east-2.elb.amazonaws.com`
 
 ```bash
 # Health check
-curl --request GET 'EXTERNAL_URL_PLACEHOLDER/'
+curl --request GET 'http://a198b565304834ff79a9a5b528a59da1-803878907.us-east-2.elb.amazonaws.com/'
 # Get a JWT
-export TOKEN=`curl -d '{"email":"abc@xyz.com","password":"mypwd"}' -H "Content-Type: application/json" -X POST EXTERNAL_URL_PLACEHOLDER/auth  | jq -r '.token'`
+export TOKEN=`curl -d '{"email":"abc@xyz.com","password":"mypwd"}' -H "Content-Type: application/json" -X POST http://a198b565304834ff79a9a5b528a59da1-803878907.us-east-2.elb.amazonaws.com/auth  | jq -r '.token'`
 # Decode the JWT
-curl --request GET 'EXTERNAL_URL_PLACEHOLDER/contents' -H "Authorization: Bearer ${TOKEN}" | jq .
+curl --request GET 'http://a198b565304834ff79a9a5b528a59da1-803878907.us-east-2.elb.amazonaws.com/contents' -H "Authorization: Bearer ${TOKEN}" | jq .
 ```
 
 What was done for each part of the rubric:
@@ -36,6 +36,8 @@ What was done for each part of the rubric:
 | Default values for EKS cluster name, GitHub repo, GitHub user and kubectl role | `Parameters` section of [`ci-cd-codepipeline.cfn.yml`](ci-cd-codepipeline.cfn.yml) |
 | buildspec reads `JWT_SECRET` from the AWS Parameter Store | `env.parameter-store` in [`buildspec.yml`](buildspec.yml) |
 | Unit tests run in CodeBuild before anything is built or deployed | `pre_build` phase in [`buildspec.yml`](buildspec.yml), tests in [`test_main.py`](test_main.py) |
+
+The pipeline was also checked with a deliberately broken test (`assert False`, commit f8f441c): CodeBuild stopped in `pre_build` with "BUILD FAILED - unit tests in test_main.py did not pass" and nothing was deployed. The next commit restored the test.
 
 Extras:
 
